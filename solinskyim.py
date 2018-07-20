@@ -1,17 +1,19 @@
 import numpy as np
-from skimage import feature, filters, measure,  morphology as morph
-from math import sqrt
+from skimage import io, feature, filters, measure,  morphology as morph, segmentation as seg
 from scipy.optimize import linear_sum_assignment
+import scipy.ndimage as nd
 import cv2
 import matplotlib
 import random
+import PIL.Image as Image
+import re
 distancethresh = 10
 simthresh = 1
 
 
 
 
-
+#Utility functions
 def _middler(a):
     abeg = a[:-1]
     aend = a[1:]
@@ -21,8 +23,15 @@ def _middler(a):
         retval[k] = i + abs(i-j)/2
         k += 1
     return retval
+def eucliddis(a, b):
+    return (((a[0] - b[0]) **2) + ((a[1] - b[1]) ** 2)) ** 0.5
 
-#Image display finctions
+def tuplist2coords(coords):
+        xcoords = list(zip(*coords))[0]
+        ycoords = list(zip(*coords))[1]
+        coords = (xcoords, ycoords)
+        return coords
+#Image display functions
 
 def randcmap():
     return matplotlib.colors.ListedColormap(np.random.rand(256,3))
@@ -34,13 +43,41 @@ def segrandomizer(array):
         array[i] = choice[n]
     return array
 
+def bboxadder(bboxes):
+    dim = len(bboxes[0]) // 2
+    retval = np.zeros(len(bboxes[0]))
+    bboxes = np.array(bboxes)
+    retval[:dim] = np.amin(bboxes, axis=0)[:dim]
+    retval[dim:] = np.amax(bboxes, axis=0)[dim:]
+    return retval
+
+def objectextractor(labelimage, labels):
+    return np.where(np.isin(labelimage, labels), labelimage, 0)
+    
+#Image editing functions
+def unstitch(imagepath, dimensions):
+    rows = dimensions[0]
+    cols = dimensions[1]
+    image = io.imread(imagepath)
+    imagename = re.search('([^/]*)[.].*$', imagepath).group(1)
+    imagefolder = re.match('.*/', imagepath).group(0)
+    height = image.shape[0]//rows
+    width = image.shape[1]//cols
+    for row in range(rows):
+        for col in range(cols):
+            imtemplate = np.zeros((height, width))
+            siteno = (row * cols) + col + 1
+            imtemplate = image[row*height: row*height+height, col*width:col*width+width]
+            io.imsave(f'{imagefolder}{imagename}_site{siteno}.tif', imtemplate)
+            
+            
+    
 
 
 
 
 
 #Image analysis functions
-    #FIX THESE TO HANDLE OVERFLOW AND UNDERFLOW ERRORS, ESPECIALLY FOR THE UINT16 DATATYPE!
 def hmaxima(image, brightness):
     image = image.astype('int64')
     mask = image + brightness
@@ -63,36 +100,77 @@ def watershedseed(image, brightness, distance, binmask = None):
 def tunewatershed(image, brightness, distance, binmask = None):
     maxima = regmaxima(image, brightness) > (brightness - 1)
     maxima = morph.binary_dilation(maxima, selem = morph.disk(distance))
+    maxima = maxima & binmask
+    maxima = measure.label(maxima)
+    return morph.watershed(-image, maxima, mask = binmask)
+
+def distancewatershed(brightness, distance, binmask):
+    image = nd.distance_transform_edt(binmask)
+    maxima = regmaxima(image, brightness) > (brightness - 1)
+    maxima = morph.binary_dilation(maxima, selem = morph.disk(distance))
+    maxima = maxima & binmask
     maxima = measure.label(maxima)
     return morph.watershed(-image, maxima, mask = binmask)
 
 def seedwatershed(image, seeds, binmask = None):
+    seedm = np.zeros(image.shape)
+    for i, seed in enumerate(seeds):
+        seedm[seed] = i
+    return morph.watershed(-image, seedm, mask = binmask)
+
+def areawatershed(image, seeds, binmask = None):
     return morph.watershed(-image, seeds, mask = binmask)
 
 def diskfilter(image, radius):
     disk = morph.disk(radius)
     return(cv2.morphologyEx(image, cv2.MORPH_TOPHAT, disk))
     
+def edgefilter(image):
+    seed = np.zeros(image.shape)
+    seed[:] = image.min()
+    seed[1:-1, 1:-1] = image[1:-1, 1:-1]
+    return morph.reconstruction(seed, image, method='dilation')
+
+#Collects boundaries between two labeled regions in a label image
+def boundarycollector(labelimage, labels):
+    array1 = seg.find_boundaries(labelimage == labels[0]).astype('uint8')
+    for label in labels[1:]:
+        arrayi = seg.find_boundaries(labelimage == label).astype('uint8')
+        array1 = array1 + arrayi
+    return array1 > 1
+        
+    
     
 #Customized threshold functions
     
-def relperimeterthresh(image):
-    hithresh = int(filters.threshold_otsu(image))
-    lothresh = int(filters.threshold_triangle(image))
-    threshqual = []
-    threshsearch = []
-    for thresh in range(lothresh, hithresh, (hithresh-lothresh)//40):
-        sample = image > thresh
-        threshqual.append((measure.perimeter(sample) ** 2)/np.sum(sample))
-        threshsearch.append(thresh)
-    goodthresh = threshsearch[np.argmin(threshqual)]
-    return goodthresh
+def relperimeterthresh(image, exponent = 2):
+    try:
+        #Lowering the exponent increases tolerance for rough image edges, and is more suitable when
+        #there is a large variance in foreground brightness
+        lothresh = filters.threshold_triangle(image)
+        hithresh = filters.threshold_otsu(image)
+        if lothresh > hithresh:
+            lothresh = hithresh // 2 
+        threshqual = []
+        threshsearch = []
+        for thresh in range(lothresh, hithresh +10, max((hithresh-lothresh)//5, 1)):
+            sample = image > thresh
+            threshqual.append((measure.perimeter(sample) ** exponent)/np.sum(sample))
+            threshsearch.append(thresh)
+        goodthresh = threshsearch[np.argmin(threshqual)]
+        return goodthresh
+    except:
+        try:
+            return filters.threshold_otsu(image)
+        except ValueError:
+            return np.nan
 
 def histtriangle(hist, nbins = 256):
     #Takes images or image histograms as inputs
     if hist.__class__ == tuple:
         bin_edges = hist[1]
         hist = hist[0]
+        nbins = len(hist)
     else:
         histthing = np.histogram(hist, bins = nbins)
         hist = histthing[0]
@@ -135,16 +213,35 @@ def histtriangle(hist, nbins = 256):
         arg_level = nbins - arg_level - 1
 
     return bin_centers[arg_level]
-
 ###################################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Pairassessment:
     def __init__(self, nucleus1, nucleus2):
         self.nucleus1 = nucleus1
         self.nucleus2 = nucleus2
-        self.cost = sqrt((nucleus1.x - nucleus2.x) ** 2 + \
-                         (nucleus1.y - y) ** 2)
+        self.cost = ((nucleus1.x - nucleus2.x) ** 2 + \
+                         (nucleus1.y - nucleus2.y) ** 2) ** 0.5
 def lapmatrix(frame1, frame2):
         '''
         frame1 is the list of nuclei in frame 1,
@@ -210,7 +307,8 @@ def findoverlap(tracks):
                 if min(overlapdistances) < distancethresh and overlapsimilarities[candidate] < simthresh:
                     fusenuclist.append(fusenuc)
         return(fusenuc)           
-                
+        
+
                 
             
             

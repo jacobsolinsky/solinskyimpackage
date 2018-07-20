@@ -10,15 +10,16 @@ from skimage import segmentation as seg
 from skimage import morphology as morph
 from scipy import ndimage
 from scipy.ndimage import morphology as ndmorph
-from math import *
+from math import floor, sqrt
 from string import ascii_uppercase
 import os
 import sys
 import random
 import cv2
-sys.path.append('/Users/Lab/improject')
-from solinskyim.multiotsu import threshold_multiotsu
+from ..multiotsu import threshold_multiotsu as threshold_multiotsu
 
+
+sys.path.append('/Users/Lab/improject')
 vals = np.linspace(0, 1, 10000)
 np.random.shuffle(vals)
 randomcmap = plt.cm.colors.ListedColormap(plt.cm.jet(vals))
