@@ -12,7 +12,7 @@ from pathlib import Path
 from joblib import Parallel, delayed
 from skimage import io, measure, morphology as morph, segmentation as seg
 from matplotlib import pyplot as plt
-from . import solinskyim as solim
+from solinskyimpackage import solinskyim as solim
 def focusmeasure(image):
     return cv2.Laplacian(cv2.GaussianBlur(image, (5,5), 0), cv2.CV_64F).var()
     
